@@ -1,165 +1,164 @@
-#!/usr/bin/env python3
-# Copyright (C) @subinps
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 import asyncio
-from pyrogram import Client, filters
-from pyrogram.errors import FloodWait, MessageIdInvalid
-from pyrogram.types import CallbackQuery, InputMediaVideo
-import time
-from utils import FIX_TG_SUCKS, TG_SUCKS, VIDEO_DICT, CAPTIONS, get_height_and_width, get_link, trim_video, get_time_hh_mm_ss, short_num, progress_bar
 import os
-from yt_dlp import YoutubeDL
-from config import Config
 
-BOT = {} # to store bot username for avoiding floodwait.
+from pyrogram import (Client,
+                      InlineKeyboardButton,
+                      InlineKeyboardMarkup,
+                      ContinuePropagation,
+                      InputMediaDocument,
+                      InputMediaVideo,
+                      InputMediaAudio)
 
-@Client.on_callback_query(filters.regex(r"^trim"))
-async def cb_handler(client: Client, query: CallbackQuery):
-    _, start, end, vid, user, caption = query.data.split(":")
-    BLAME_TG = None
-    is_default_caption = False
-    if caption == "none": 
-        caption = None # If no caption is provided by user, default caption will be used.
-        is_default_caption = True
-    elif caption == "nill":
-        caption = "" # if only -c is used while inline query.
-    else:
-        caption = CAPTIONS.get(caption)
-        if caption is None:
-            is_default_caption = True
-    if query.from_user.id != int(user):
-        return await query.answer("Okda", show_alert=True)
-    begin = time.time()
-    try:
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption="Getting Video Details..")
-    except FloodWait as e:
-        await asyncio.sleep(e.x)
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption="Getting Video Details..")
-    except MessageIdInvalid:
-        # Telegram fails to edit inline media for some unknown reason.
-        if not BOT.get("me"):
-            BOT["me"] = (await client.get_me()).username
-        user_name = BOT['me']
-        await query.answer(url=f"https://t.me/{user_name}?start=tgsucks_{vid}_{start}_{end}")
-        BLAME_TG = True
-    except Exception as e:
-        print(e)
-    await query.answer("Please Wait...")
-    info = VIDEO_DICT.get(vid) # Once fetched , info are saved to a dict for faster query in future .
-    if info:
-        dur = info['dur']
-        view = info['views']
-        title = info['title']
-        id = vid
-    else:
-        try:
-            ydl_opts = {
-                "quite": True,
-                "geo-bypass": True,
-                "nocheckcertificate": True
-            }
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(vid, download=False)                
-        except:
-            info = None
-        dur = get_time_hh_mm_ss(info["duration"])
-        view = short_num(info["view_count"])
-        id = info['id']
-        title = info['title']
-        VIDEO_DICT[id] = {'dur':dur, 'views':view, 'title':title}
+from helper.ffmfunc import duration
+from helper.ytdlfunc import downloadvideocli, downloadaudiocli
+from PIL import Image
+from hachoir.metadata import extractMetadata
+from hachoir.parser import createParser
 
-    tdur  = int(end) - int(start)
-    if is_default_caption:
-        if info:
-            caption = f"<a href=https://www.youtube.com/watch?v={id}&t={start}>{title}</a>\n👀 Views: {view}\n🎞 Duration: {dur}\n✂️ Trim Duration: {tdur} seconds (from `{get_time_hh_mm_ss(start)}` to `{get_time_hh_mm_ss(end)}`)"
+@Client.on_callback_query()
+async def catch_youtube_fmtid(c, m):
+    cb_data = m.data
+    if cb_data.startswith("ytdata||"):
+        yturl = cb_data.split("||")[-1]
+        format_id = cb_data.split("||")[-2]
+        media_type = cb_data.split("||")[-3].strip()
+        print(media_type)
+        if media_type == 'audio':
+            buttons = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "Audio", callback_data=f"{media_type}||{format_id}||{yturl}"), InlineKeyboardButton("Document",
+                                                                                                    callback_data=f"docaudio||{format_id}||{yturl}")]])
         else:
-            caption = f"<a href=https://www.youtube.com/watch?v={id}&t={start}>{title}</a>\n✂️ Trim Duration: {tdur} (from {get_time_hh_mm_ss(start)} to {get_time_hh_mm_ss(end)})"
+            buttons = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "Video", callback_data=f"{media_type}||{format_id}||{yturl}"), InlineKeyboardButton("Document",
+                                                                                                    callback_data=f"docvideo||{format_id}||{yturl}")]])
 
-    link = await get_link(vid) # generate a direct download link for video 
-    try:
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption=caption + "\n\nStatus: Getting Video Details..")
-    except FloodWait as e:
-        await asyncio.sleep(e.x)
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption=caption + "\n\nStatus: Getting Video Details..")
-    except MessageIdInvalid:
-        BLAME_TG = True
-    except Exception as e:
-        print(e)
-    if not link:
-        return await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption="❌ Failed to generate sufficient info.")
-    out = f"{query.inline_message_id}.mp4"
-    thumb = f"{query.inline_message_id}.jpeg"
-    try:
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption=caption + "\n\nStatus: Trimming Your Video...")
-    except FloodWait as e:
-        await asyncio.sleep(e.x)
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption=caption + "\n\nStatus: Trimming Your Video...")
-    except MessageIdInvalid:
-        BLAME_TG = True
-    except Exception as e:
-        print(e)
-    await trim_video(link, start, end, out, thumb)
-    if (not os.path.exists(out)) or (
-        os.path.getsize(out) == 0
-        ):
-        return await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption="❌ Failed")
-    if (not os.path.exists(thumb)) or (
-        os.path.getsize(thumb) == 0
-        ):
-        thumb = None
-    p_end = time.time()
-    try:
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption=caption + "\n\nStatus:Uploading Your Video To Telegram.")
-    except FloodWait as e:
-        await asyncio.sleep(e.x)
-        await client.edit_inline_caption(inline_message_id = query.inline_message_id, caption=caption + "\n\nStatus:Uploading Your Video To Telegram.")
-    except MessageIdInvalid:
-        BLAME_TG = True
-    except Exception as e:
-        print(e)
-    width, height = await get_height_and_width(out)
-    upload = await client.send_video(
-        Config.LOG_CHANNEL, 
-        out, 
-        caption, 
-        duration=tdur,
-        supports_streaming=True,
-        thumb = thumb, 
-        width = width, 
-        height = height,
-        progress=progress_bar,
-        progress_args=(client, time.time(), query.inline_message_id, caption)
-    )
-    media = InputMediaVideo(upload.video.file_id, caption = caption + (f"\nStatus: Succesfully Uploaded.\nTime Taken {round(p_end-begin)} Seconds" if is_default_caption else ""))
-    try:
-        await client.edit_inline_media(query.inline_message_id, media)
-    except FloodWait as e:
-        await asyncio.sleep(e.x)
-        await client.edit_inline_media(query.inline_message_id, media)
-    except MessageIdInvalid:
-        BLAME_TG = True
-    except Exception as e:
-        print(e)
-    if BLAME_TG:
-        if FIX_TG_SUCKS.get(f'{vid}_{start}_{end}'):
-            await client.send_video(query.from_user.id, upload.video.file_id, caption=caption + (f"\nStatus: Succesfully Uploaded.\nTime Taken {round(p_end-begin)} Seconds" if is_default_caption else ""))
-        TG_SUCKS[f'{vid}_{start}_{end}'] = {'file_id':upload.video.file_id, 'caption':caption + (f"\nStatus: Succesfully Uploaded.\nTime Taken {round(p_end-begin)} Seconds" if is_default_caption else "")}
-    try:
-        os.remove(out)
-        os.remove(thumb)
-    except:
-        pass
+        await m.edit_message_reply_markup(buttons)
+
+    else:
+        raise ContinuePropagation
 
 
+@Client.on_callback_query()
+async def catch_youtube_dldata(c, q):
+    cb_data = q.data.strip()
+    #print(q.message.chat.id)
+    # Callback Data Check
+    yturl = cb_data.split("||")[-1]
+    format_id = cb_data.split("||")[-2]
+    thumb_image_path = "/app/downloads" + \
+        "/" + str(q.message.chat.id) + ".jpg"
+    print(thumb_image_path)
+    if os.path.exists(thumb_image_path):
+        width = 0
+        height = 0
+        metadata = extractMetadata(createParser(thumb_image_path))
+        #print(metadata)
+        if metadata.has("width"):
+            width = metadata.get("width")
+        if metadata.has("height"):
+            height = metadata.get("height")
+        img = Image.open(thumb_image_path)
+        if cb_data.startswith(("audio", "docaudio", "docvideo")):
+            img.resize((320, height))
+        else:
+            img.resize((90, height))
+        img.save(thumb_image_path, "JPEG")
+     #   print(thumb_image_path)
+    if not cb_data.startswith(("video", "audio", "docaudio", "docvideo")):
+        print("no data found")
+        raise ContinuePropagation
+
+    filext = "%(title)s.%(ext)s"
+    userdir = os.path.join(os.getcwd(), "downloads", str(q.message.chat.id))
+
+    if not os.path.isdir(userdir):
+        os.makedirs(userdir)
+    await q.edit_message_reply_markup(
+        InlineKeyboardMarkup([[InlineKeyboardButton("Downloading...", callback_data="down")]]))
+    filepath = os.path.join(userdir, filext)
+    # await q.edit_message_reply_markup([[InlineKeyboardButton("Processing..")]])
+
+    audio_command = [
+        "youtube-dl",
+        "-c",
+        "--prefer-ffmpeg",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", format_id,
+        "-o", filepath,
+        yturl,
+
+    ]
+
+    video_command = [
+        "youtube-dl",
+        "-c",
+        "--embed-subs",
+        "-f", f"{format_id}+bestaudio",
+        "-o", filepath,
+        "--hls-prefer-ffmpeg", yturl]
+
+    loop = asyncio.get_event_loop()
+
+    med = None
+    if cb_data.startswith("audio"):
+        filename = await downloadaudiocli(audio_command)
+        med = InputMediaAudio(
+            media=filename,
+            thumb=thumb_image_path,
+            caption=os.path.basename(filename),
+            title=os.path.basename(filename)
+        )
+
+    if cb_data.startswith("video"):
+        filename = await downloadvideocli(video_command)
+        dur = round(duration(filename))
+        med = InputMediaVideo(
+            media=filename,
+            duration=dur,
+            width=width,
+            height=height,
+            thumb=thumb_image_path,
+            caption=os.path.basename(filename),
+            supports_streaming=True
+        )
+
+    if cb_data.startswith("docaudio"):
+        filename = await downloadaudiocli(audio_command)
+        med = InputMediaDocument(
+            media=filename,
+            thumb=thumb_image_path,
+            caption=os.path.basename(filename),
+        )
+
+    if cb_data.startswith("docvideo"):
+        filename = await downloadvideocli(video_command)
+        dur = round(duration(filename))
+        med = InputMediaDocument(
+            media=filename,
+            thumb=thumb_image_path,
+            caption=os.path.basename(filename),
+        )
+    if med:
+        loop.create_task(send_file(c, q, med, filename))
+    else:
+        print("med not found")
+
+
+async def send_file(c, q, med, filename):
+    print(med)
+    try:
+        await q.edit_message_reply_markup(
+            InlineKeyboardMarkup([[InlineKeyboardButton("Uploading...", callback_data="down")]]))
+        await c.send_chat_action(chat_id=q.message.chat.id, action="upload_document")
+        # this one is not working
+        await q.edit_message_media(media=med)
+    except Exception as e:
+        print(e)
+        await q.edit_message_text(e)
+    finally:
+        try:
+            os.remove(filename)
+            os.remove(thumb_image_path)
+        except:
+            pass
